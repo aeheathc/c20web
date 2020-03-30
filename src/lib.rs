@@ -1,11 +1,13 @@
+#[macro_use]
+extern crate lazy_static;
+
 use std::collections::HashMap;
 use std::io::prelude::*;
 use std::net::Shutdown;
 use std::net::TcpStream;
 use std::fs;
-use std::sync::Arc;
 
-pub fn handle_connection(mut stream: TcpStream, http_codes: Arc::<HashMap<u16,String>>)
+pub fn handle_connection(mut stream: TcpStream)
 {
 	const MAX_REQUEST_BYTES: usize = 1000;
 	let mut buffer = [0u8; MAX_REQUEST_BYTES];
@@ -80,7 +82,7 @@ pub fn handle_connection(mut stream: TcpStream, http_codes: Arc::<HashMap<u16,St
 	*/
 	let _shutdown_res = stream.shutdown(Shutdown::Read);
 
-	let status = if let Some(status_str) = http_codes.get(&response_code)
+	let status = if let Some(status_str) = HTTP_RESPONSE_TABLE.get(&response_code)
 	{
 		format!("{} {}",response_code,status_str)
 	}else{
@@ -118,71 +120,72 @@ pub fn handle_connection(mut stream: TcpStream, http_codes: Arc::<HashMap<u16,St
 	}
 }
 
-pub fn http_response_table() -> HashMap<u16,String>
-{
-	let mut codes = HashMap::<u16,String>::new();
-	codes.insert(100, String::from("Continue"));
-	codes.insert(101, String::from("Switching Protocols"));
-	codes.insert(102, String::from("Processing"));
-	codes.insert(200, String::from("OK"));
-	codes.insert(201, String::from("Created"));
-	codes.insert(202, String::from("Accepted"));
-	codes.insert(203, String::from("Non-authoritative Information"));
-	codes.insert(204, String::from("No Content"));
-	codes.insert(205, String::from("Reset Content"));
-	codes.insert(206, String::from("Partial Content"));
-	codes.insert(207, String::from("Multi-Status"));
-	codes.insert(208, String::from("Already Reported"));
-	codes.insert(226, String::from("IM Used"));
-	codes.insert(300, String::from("Multiple Choices"));
-	codes.insert(301, String::from("Moved Permanently"));
-	codes.insert(302, String::from("Found"));
-	codes.insert(303, String::from("See Other"));
-	codes.insert(304, String::from("Not Modified"));
-	codes.insert(305, String::from("Use Proxy"));
-	codes.insert(307, String::from("Temporary Redirect"));
-	codes.insert(308, String::from("Permanent Redirect"));
-	codes.insert(400, String::from("Bad Request"));
-	codes.insert(401, String::from("Unauthorized"));
-	codes.insert(402, String::from("Payment Required"));
-	codes.insert(403, String::from("Forbidden"));
-	codes.insert(404, String::from("Not Found"));
-	codes.insert(405, String::from("Method Not Allowed"));
-	codes.insert(406, String::from("Not Acceptable"));
-	codes.insert(407, String::from("Proxy Authentication Required"));
-	codes.insert(408, String::from("Request Timeout"));
-	codes.insert(409, String::from("Conflict"));
-	codes.insert(410, String::from("Gone"));
-	codes.insert(411, String::from("Length Required"));
-	codes.insert(412, String::from("Precondition Failed"));
-	codes.insert(413, String::from("Payload Too Large"));
-	codes.insert(414, String::from("Request-URI Too Long"));
-	codes.insert(415, String::from("Unsupported Media Type"));
-	codes.insert(416, String::from("Requested Range Not Satisfiable"));
-	codes.insert(417, String::from("Expectation Failed"));
-	codes.insert(418, String::from("I'm a teapot"));
-	codes.insert(421, String::from("Misdirected Request"));
-	codes.insert(422, String::from("Unprocessable Entity"));
-	codes.insert(423, String::from("Locked"));
-	codes.insert(424, String::from("Failed Dependency"));
-	codes.insert(426, String::from("Upgrade Required"));
-	codes.insert(428, String::from("Precondition Required"));
-	codes.insert(429, String::from("Too Many Requests"));
-	codes.insert(431, String::from("Request Header Fields Too Large"));
-	codes.insert(444, String::from("Connection Closed Without Response"));
-	codes.insert(451, String::from("Unavailable For Legal Reasons"));
-	codes.insert(499, String::from("Client Closed Request"));
-	codes.insert(500, String::from("Internal Server Error"));
-	codes.insert(501, String::from("Not Implemented"));
-	codes.insert(502, String::from("Bad Gateway"));
-	codes.insert(503, String::from("Service Unavailable"));
-	codes.insert(504, String::from("Gateway Timeout"));
-	codes.insert(505, String::from("HTTP Version Not Supported"));
-	codes.insert(506, String::from("Variant Also Negotiates"));
-	codes.insert(507, String::from("Insufficient Storage"));
-	codes.insert(508, String::from("Loop Detected"));
-	codes.insert(510, String::from("Not Extended"));
-	codes.insert(511, String::from("Network Authentication Required"));
-	codes.insert(599, String::from("Network Connect Timeout Error"));
-	codes
+lazy_static!{
+    static ref HTTP_RESPONSE_TABLE: HashMap<u16,String> = {
+        let mut codes = HashMap::<u16,String>::new();
+        codes.insert(100, String::from("Continue"));
+        codes.insert(101, String::from("Switching Protocols"));
+        codes.insert(102, String::from("Processing"));
+        codes.insert(200, String::from("OK"));
+        codes.insert(201, String::from("Created"));
+        codes.insert(202, String::from("Accepted"));
+        codes.insert(203, String::from("Non-authoritative Information"));
+        codes.insert(204, String::from("No Content"));
+        codes.insert(205, String::from("Reset Content"));
+        codes.insert(206, String::from("Partial Content"));
+        codes.insert(207, String::from("Multi-Status"));
+        codes.insert(208, String::from("Already Reported"));
+        codes.insert(226, String::from("IM Used"));
+        codes.insert(300, String::from("Multiple Choices"));
+        codes.insert(301, String::from("Moved Permanently"));
+        codes.insert(302, String::from("Found"));
+        codes.insert(303, String::from("See Other"));
+        codes.insert(304, String::from("Not Modified"));
+        codes.insert(305, String::from("Use Proxy"));
+        codes.insert(307, String::from("Temporary Redirect"));
+        codes.insert(308, String::from("Permanent Redirect"));
+        codes.insert(400, String::from("Bad Request"));
+        codes.insert(401, String::from("Unauthorized"));
+        codes.insert(402, String::from("Payment Required"));
+        codes.insert(403, String::from("Forbidden"));
+        codes.insert(404, String::from("Not Found"));
+        codes.insert(405, String::from("Method Not Allowed"));
+        codes.insert(406, String::from("Not Acceptable"));
+        codes.insert(407, String::from("Proxy Authentication Required"));
+        codes.insert(408, String::from("Request Timeout"));
+        codes.insert(409, String::from("Conflict"));
+        codes.insert(410, String::from("Gone"));
+        codes.insert(411, String::from("Length Required"));
+        codes.insert(412, String::from("Precondition Failed"));
+        codes.insert(413, String::from("Payload Too Large"));
+        codes.insert(414, String::from("Request-URI Too Long"));
+        codes.insert(415, String::from("Unsupported Media Type"));
+        codes.insert(416, String::from("Requested Range Not Satisfiable"));
+        codes.insert(417, String::from("Expectation Failed"));
+        codes.insert(418, String::from("I'm a teapot"));
+        codes.insert(421, String::from("Misdirected Request"));
+        codes.insert(422, String::from("Unprocessable Entity"));
+        codes.insert(423, String::from("Locked"));
+        codes.insert(424, String::from("Failed Dependency"));
+        codes.insert(426, String::from("Upgrade Required"));
+        codes.insert(428, String::from("Precondition Required"));
+        codes.insert(429, String::from("Too Many Requests"));
+        codes.insert(431, String::from("Request Header Fields Too Large"));
+        codes.insert(444, String::from("Connection Closed Without Response"));
+        codes.insert(451, String::from("Unavailable For Legal Reasons"));
+        codes.insert(499, String::from("Client Closed Request"));
+        codes.insert(500, String::from("Internal Server Error"));
+        codes.insert(501, String::from("Not Implemented"));
+        codes.insert(502, String::from("Bad Gateway"));
+        codes.insert(503, String::from("Service Unavailable"));
+        codes.insert(504, String::from("Gateway Timeout"));
+        codes.insert(505, String::from("HTTP Version Not Supported"));
+        codes.insert(506, String::from("Variant Also Negotiates"));
+        codes.insert(507, String::from("Insufficient Storage"));
+        codes.insert(508, String::from("Loop Detected"));
+        codes.insert(510, String::from("Not Extended"));
+        codes.insert(511, String::from("Network Authentication Required"));
+        codes.insert(599, String::from("Network Connect Timeout Error"));
+        codes
+    };
 }
