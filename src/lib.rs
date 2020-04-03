@@ -2,20 +2,29 @@
 extern crate lazy_static;
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::prelude::*;
 use std::net::Shutdown;
 use std::net::TcpStream;
-use std::fs;
+use std::sync::RwLock;
+use config::Config;
 
 pub fn handle_connection(mut stream: TcpStream)
 {
-	const MAX_REQUEST_BYTES: usize = 1000;
-	let mut buffer = [0u8; MAX_REQUEST_BYTES];
+	println!("Starting to process request.");
+	let settings = SETTINGS.read().expect("Couldn't get config in request thread");
+	let webroot = settings.get::<String>("webroot").expect("webroot missing from config");
+	let request_max_bytes = settings.get::<usize>("request_max_bytes").expect("request_max_bytes missing from config");
+
+	println!("Creating buffer");
+	let mut buffer = vec![0u8; request_max_bytes].into_boxed_slice();
+	println!("Buffer created. Reading input");
 	let request_result = stream.read(&mut buffer);
+	println!("Request read. Starting analysis");
 	let (response_code, mut response_body): (u16, String) = match request_result
 	{
 		Ok(num_bytes) => {
-			if num_bytes >= MAX_REQUEST_BYTES
+			if num_bytes >= request_max_bytes
 			{
 				(413,String::from(""))
 			}else{
@@ -58,6 +67,7 @@ pub fn handle_connection(mut stream: TcpStream)
 							Ok(resource) =>
 							{
 								let resource = resource.replacen(&"/",&"",1);
+								let resource = format!("{}/{}", webroot, resource);
 								println!("Requesting page: {}",&resource);
 								let body_result = fs::read_to_string(&resource);
 								match body_result
@@ -73,6 +83,7 @@ pub fn handle_connection(mut stream: TcpStream)
 		},
 		Err(err_str) => {(400,format!("The network stream didn't stay valid long enough for the server to read it: {}",err_str))}
 	};
+	println!("Request analyzed. Closing input and starting output.");
 
 	/* Any output won't make it to the browser if there is still input left to be read.
 	 * In order to avoid DoS attacks by enforcing max request size, and still
@@ -120,8 +131,13 @@ pub fn handle_connection(mut stream: TcpStream)
 	}
 }
 
-lazy_static!{
-    static ref HTTP_RESPONSE_TABLE: HashMap<u16,String> = {
+lazy_static!
+{
+	pub static ref DEFAULT_CONFIG: String = String::from("listen_addr = \"127.0.0.1:7878\"\nworking_dir = \"data\"\nwebroot = \"webroot\"\nthreads_max = 100\nrequest_max_bytes = 1000");
+
+	pub static ref SETTINGS: RwLock<Config> = RwLock::new(Config::default());
+
+    pub static ref HTTP_RESPONSE_TABLE: HashMap<u16,String> = {
         let mut codes = HashMap::<u16,String>::new();
         codes.insert(100, String::from("Continue"));
         codes.insert(101, String::from("Switching Protocols"));
