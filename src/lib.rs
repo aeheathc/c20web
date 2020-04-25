@@ -8,19 +8,29 @@ use std::net::Shutdown;
 use std::net::TcpStream;
 use std::sync::RwLock;
 use config::Config;
+use log::{error, warn, info, debug, trace, log, Level};
 
 pub fn handle_connection(mut stream: TcpStream)
 {
-	println!("Starting to process request.");
-	let settings = SETTINGS.read().expect("Couldn't get config in request thread");
-	let webroot = settings.get::<String>("webroot").expect("webroot missing from config");
-	let request_max_bytes = settings.get::<usize>("request_max_bytes").expect("request_max_bytes missing from config");
+	trace!("Starting to process request.");
+	let settings = match SETTINGS.read(){
+		Ok(r) => r,
+		Err(e) => {error!("Couldn't get config in request thread: {}",e); return;}
+	};
+	let webroot = match settings.get::<String>("webroot"){
+		Ok(r) => r,
+		Err(e) => {error!("webroot missing from config: {}",e); return;}
+	};
+	let request_max_bytes = match settings.get::<usize>("request_max_bytes"){
+		Ok(r) => r,
+		Err(e) => {error!("request_max_bytes missing from config: {}",e); return;}
+	};
 
-	println!("Creating buffer");
+	trace!("Creating buffer");
 	let mut buffer = vec![0u8; request_max_bytes].into_boxed_slice();
-	println!("Buffer created. Reading input");
+	trace!("Buffer created. Reading input");
 	let request_result = stream.read(&mut buffer);
-	println!("Request read. Starting analysis");
+	trace!("Request read. Starting analysis");
 	let (response_code, mut response_body): (u16, String) = match request_result
 	{
 		Ok(num_bytes) => {
@@ -68,7 +78,7 @@ pub fn handle_connection(mut stream: TcpStream)
 							{
 								let resource = resource.replacen(&"/",&"",1);
 								let resource = format!("{}/{}", webroot, resource);
-								println!("Requesting page: {}",&resource);
+								trace!("Requesting page: {}",&resource);
 								let body_result = fs::read_to_string(&resource);
 								match body_result
 								{
@@ -83,7 +93,7 @@ pub fn handle_connection(mut stream: TcpStream)
 		},
 		Err(err_str) => {(400,format!("The network stream didn't stay valid long enough for the server to read it: {}",err_str))}
 	};
-	println!("Request analyzed. Closing input and starting output.");
+	trace!("Request analyzed. Closing input and starting output.");
 
 	/* Any output won't make it to the browser if there is still input left to be read.
 	 * In order to avoid DoS attacks by enforcing max request size, and still
@@ -97,6 +107,7 @@ pub fn handle_connection(mut stream: TcpStream)
 	{
 		format!("{} {}",response_code,status_str)
 	}else{
+		warn!("Returning HTTP response code with no name: {}", response_code);
 		format!("{} Unknown",response_code)
 	};
 
@@ -105,14 +116,26 @@ pub fn handle_connection(mut stream: TcpStream)
 		let errpage_result = fs::read_to_string("error.html");
 		let mut error_page = match errpage_result
 		{
-			Err(_) => String::from("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>{}</title></head><body><h1>{}</h1><p>{}</p></body></html>"),
+			Err(e) => {
+				warn!("Using default error page because we wouldn't find error.html - {}",e);
+				String::from("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>{}</title></head><body><h1>{}</h1><p>{}</p></body></html>")
+			},
 			Ok(body) => body
 		};
 		error_page = error_page.replacen("{}", &status, 2);
 		response_body = error_page.replacen("{}", &response_body, 1);
 	}
 
+	//build request log line
+	let peer_ip = match stream.peer_addr()
+	{
+		Ok(r) => r.to_string(),
+		Err(e)=> {warn!("Couldn't get peer IP: {}",e); String::from("Unknown")}
+	};
+	let request_line = format!("From: {} Response code: {}", peer_ip, response_code);
+	log!(target: "requests", Level::Info, "{}", request_line);
 
+	//build response
 	let headers = format!("Content-Type: text/html;\r\nContent-Length: {};", response_body.len());
 	let response = format!("HTTP/1.1 {}\r\n{}\r\n\r\n{}", status, headers, response_body);
 	
@@ -120,14 +143,14 @@ pub fn handle_connection(mut stream: TcpStream)
 	match write_res
 	{
 		Ok(_) => {},
-		Err(em) => {println!("Write error: {}",em);}
+		Err(em) => {error!("Write error: {}",em);}
 	}
 	
 	let flush_res = stream.flush();
 	match flush_res
 	{
 		Ok(_) => {},
-		Err(em) => {println!("Flush error: {}",em);}
+		Err(em) => {error!("Flush error: {}",em);}
 	}
 }
 

@@ -3,8 +3,11 @@ extern crate clap;
 use std::net::TcpListener;
 use std::env;
 use std::path::Path;
-use threadpool::ThreadPool;
+use std::process;
 use clap::{Arg, App};
+use log::{error, info};
+use log4rs;
+use threadpool::ThreadPool;
 
 use c20web::handle_connection;
 use c20web::SETTINGS;
@@ -38,7 +41,19 @@ fn main()
 		)
 	};
 
-    let listener = TcpListener::bind(&listen_addr).expect(&(format!("Couldn't bind to addr: {}", &listen_addr)));
+	log4rs::init_file("log4rs.yml", Default::default()).expect("log4rs.yml not found");
+	//at this point the loggers are available and any further errors can be logged instead of bring thrown into a panic
+	
+	info!("Starting up.");
+
+	let listener = match TcpListener::bind(&listen_addr)
+	{
+		Ok(r) => r,
+		Err(e) => {
+			error!("Couldn't bind to addr {}: {}", &listen_addr, e);
+			process::exit(1);
+		}
+	};
 	let pool = ThreadPool::new(threads_max);
 
     for stream in listener.incoming()
@@ -46,6 +61,6 @@ fn main()
 		let stream = stream.unwrap();
         pool.execute(move ||{handle_connection(stream);});
     }
-	println!("Shutting down.");
+	info!("Shutting down.");
 }
 

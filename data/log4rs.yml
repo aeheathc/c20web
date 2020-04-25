@@ -1,0 +1,29 @@
+refresh_rate: 60 seconds
+appenders:
+  stdout:
+    kind: console
+    target: stdout
+  stderr:
+    kind: console
+    target: stderr
+  main:
+    kind: file
+    path: "log/main.log"
+    encoder:
+      pattern: "{d} [{P}:{I}] {l} - {m}{n}"
+  requestlog:
+    kind: file
+    path: "log/requests.log"
+    encoder:
+      pattern: "{d} [{P}:{I}] - {m}{n}"
+root:
+  level: info
+  appenders:
+    - main
+    - stdout
+loggers:
+  requests:
+    level: info
+    appenders:
+      - requestlog
+    additive: false
