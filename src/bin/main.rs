@@ -13,6 +13,12 @@ use c20web::handle_connection;
 use c20web::statics::SETTINGS;
 use c20web::statics::DEFAULT_CONFIG;
 
+/**
+Load configuration, set the working directory, initialize logging, and start listening for connections.
+
+# Panics
+If anything goes seriously wrong setting up config/cwd/logging, we panic.
+*/
 fn main()
 {
     let matches = App::new("c20web")
@@ -49,6 +55,22 @@ fn main()
 	info!("Shutting down.");
 }
 
+/**
+Listen on an interface and start the main loop which accepts each new
+connection and sends it to its own thread.
+
+# Parameters
+- `listen_addr`: The interface on which to listen
+- `threads_max`: Size of the thread pool
+
+# Examples
+```no_run
+start_listening(String::from("127.0.0.1:8000"), 100);
+```
+
+# Aborts
+Will abort when unable to bind to the listen_addr
+*/
 fn start_listening(listen_addr: String, threads_max: usize)
 {
 	let listener = match TcpListener::bind(&listen_addr)
@@ -63,7 +85,14 @@ fn start_listening(listen_addr: String, threads_max: usize)
 
     for stream in listener.incoming()
 	{
-		let stream = stream.unwrap();
+		let stream = match stream
+		{
+			Ok(s) => s,
+			Err(e) =>{
+				error!("Listener gave us an invalid TCPStream!: {}",e);
+				continue;
+			}
+		};
         pool.execute(move ||{handle_connection(stream);});
     }
 }

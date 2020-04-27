@@ -1,7 +1,6 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::io::{ErrorKind};
 use std::fs;
 use std::io::prelude::*;
 use std::net::Shutdown;
@@ -15,16 +14,53 @@ use statics::SETTINGS;
 use statics::HTTP_RESPONSE_TABLE;
 use statics::MIME_BY_EXTENSION;
 
-
+/**
+Represents an HTTP Request.
+*/
 pub struct Request
 {
-	method: String,
-	resource: String,
-	http_version: String,
+	pub method: String,
+	pub resource: String,
+	pub http_version: String,
 }
 
 impl Request
 {
+	/**
+	Generates a Request object by parsing the contents of a buffer containing the raw HTTP request data.
+
+	# Parameters
+	- `buffer`: byte buffer that the TcpStream wrote into
+
+	# Returns
+	Result indicating whether the request is well-formed enough to be parsed
+	- `OK`: a Request object containing the important data from the raw request
+	- `Err`: a Response object representing the type of error that happened
+
+	# Errors
+	Errors produce a Response object with the correct HTTP Response status code for whatever error was encountered.
+	The body of the Repsonse will be a string giving additional information, if necessary. Wrap this in the HTML document of your choice.
+
+	# Examples
+	```
+	use c20web::Response;
+	use c20web::Request;
+
+	let buffer = Box::new(b"GET /hello.html HTTP/1.1\r\nUser-Agent: Mozilla/4.0 (compatible; MSIE5.01; Windows NT)\r\nHost: 127.0.0.1:8000\r\n\r\n".to_owned());
+	//Determine our response based on what's in the request
+	let response: Response = match Request::parse(buffer)
+	{
+		Ok(request) =>
+		{
+			//Determine "mime" and "body_content" based on the value of request.resource
+			let mime = "text/html";
+			let body_content = b"Body Content".to_vec();
+			Response{code: 200, mime: String::from(mime), body: body_content}
+		},
+		Err(res) => res
+	};
+	```
+	*/
 	pub fn parse(buffer: Box<[u8]>) -> Result<Request,Response>
 	{
 		//find the necessary parts in the request
@@ -68,26 +104,65 @@ impl Request
 	}
 }
 
-pub enum Data
-{
-	Binary(Vec::<u8>),
-	Text(String)
-}
-
+/**
+Represents an HTTP Response.
+*/
 pub struct Response
 {
-	code: u16,
-	mime: String,
-	body: Data
+	pub code: u16,
+	pub mime: String,
+	pub body: Vec::<u8>
 }
 
 impl Response
 {
+	/**
+	Generates a Response object with a default MIME type of text/html.
+
+	# Parameters
+	- `code`: HTTP Status code
+	- `body`: Contents of the response Body
+
+	# Returns
+	Response object, same as if you had manually constructed the object but with a default MIME type.
+
+	# Examples
+	```
+	use c20web::Response;
+
+	let method_name = "GE7"; //assume we parsed this from the request and found it to not be a method we support
+	let out = Response::new(400, format!("Malformed method name: {}",method_name));
+
+	assert_eq!(out.code, 400);
+	assert_eq!(out.mime, String::from("text/html"));
+	assert_eq!(out.body, String::from("Malformed method name: GE7").as_bytes().to_vec());
+	```
+	*/
 	pub fn new(code: u16, body: String) -> Response
 	{
-		Response{code: code, mime:String::from("text/html"), body: Data::Text(body)}
+		Response{code, mime:String::from("text/html"), body: body.as_bytes().to_vec()}
 	}
 
+	/**
+	# Returns
+	The response exported as a complete HTTP Response in bytes, ready to be written to an output stream.
+
+	# Examples
+	```no_run
+	use c20web::Response;
+	use std::net::TcpListener;
+	use std::io::Write;
+
+	let listener = TcpListener::bind("127.0.0.1:8000").unwrap();
+    for mut stream in listener.incoming()
+	{
+		let mut stream = stream.unwrap();
+		let resp = Response::new(500, String::from("Something happened!"));
+		let write_res = stream.write(&(resp.to_vec()));
+    }
+
+	```
+	*/
 	pub fn to_vec(&self) -> Vec::<u8>
 	{
 		let status = if let Some(status_str) = HTTP_RESPONSE_TABLE.get(&self.code)
@@ -103,27 +178,177 @@ impl Response
 			let mut error_page = match fs::read_to_string("error.html")
 			{
 				Err(e) => {
-					warn!("Using default error page because we wouldn't find error.html - {}",e);
+					warn!("Using default error page because we couldn't find error.html - {}",e);
 					String::from("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>{}</title></head><body><h1>{}</h1><p>{}</p></body></html>")
 				},
 				Ok(body) => body
 			};
 			error_page = error_page.replacen("{}", &status, 2);
-			let error_descr = if let Data::Text(t) = &self.body{t.clone()}else{String::from("")};
+			let error_descr = String::from_utf8_lossy(&self.body);
 			error_page.replacen("{}", &error_descr, 1).as_bytes().to_vec()
 		}else{
-			match &self.body{
-				Data::Binary(b) => b.to_owned(),
-				Data::Text(t) => t.as_bytes().to_vec()
-			}
+			self.body.to_owned()
 		};
 
 		let mut out = (format!("HTTP/1.1 {}\r\nContent-Type: {};\r\nContent-Length: {};\r\n\r\n", status, self.mime, body_out.len())).as_bytes().to_vec();
 		out.append(&mut body_out);
 		out
 	}
+
+	/**
+	Send this response out over the given stream.
+
+	# Parameters
+	- `stream`: The stream to which we write the response
+
+	# Examples
+	```no_run
+	use c20web::Response;
+	use std::net::TcpListener;
+	use std::io::Write;
+
+	let listener = TcpListener::bind("127.0.0.1:8000").unwrap();
+    for mut stream in listener.incoming()
+	{
+		let mut stream = stream.unwrap();
+		let resp = Response::new(500, String::from("Something happened!"));
+		resp.send(stream);
+    }
+	```
+	*/
+	pub fn send(&self, mut stream: TcpStream)
+	{
+		let write_res = stream.write(&(self.to_vec()));
+		match write_res
+		{
+			Ok(_) => {},
+			Err(em) => {error!("Write error: {}",em);}
+		}
+		
+		let flush_res = stream.flush();
+		match flush_res
+		{
+			Ok(_) => {},
+			Err(em) => {error!("Flush error: {}",em);}
+		}
+	}
 }
 
+/**
+Represents the "resource" portion of the first line of an HTTP Request.
+*/
+pub struct ResourcePath
+{
+	pub resource: String
+}
+
+impl ResourcePath
+{
+	/**
+	Get the local filesystem path of the resource. Does not check for
+	its existence, just returns the path that it *should* be located at.
+
+	# Parameters
+	- `webroot`: Filesystem path to the web root.
+
+	# Returns
+	Local filesystem path of the resource
+
+	# Examples
+	```
+	use c20web::ResourcePath;
+
+	let res = ResourcePath{resource: String::from("/hello.jpg")};
+	let webroot = String::from("/var/www/myWebsite");
+	let path = res.get_path(webroot);
+
+	assert_eq!(path, String::from("/var/www/myWebsite/hello.jpg"));
+	```
+	*/
+	pub fn get_path(&self, webroot: String) -> String
+	{
+		let path = self.resource.replacen(&"/",&"",1);
+		format!("{}/{}", webroot, path)
+	}
+
+	/**
+	Get the extension of the file indicated by this resource string. This is
+	mainly for later determination of the MIME type, so if there is any
+	problem determining the extension, we just default to the empty string.
+
+	# Returns
+	The file extension.
+
+	# Examples
+	```
+	use c20web::ResourcePath;
+
+	let res = ResourcePath{resource: String::from("/hello.jpg")};
+	let extension = res.get_extension();
+	assert_eq!(extension, String::from("jpg"));
+	```
+	*/
+	pub fn get_extension(&self) -> String
+	{
+		match Path::new(&self.resource).extension(){
+			Some(x) => match x.to_str(){
+					Some(xs) => String::from(xs),
+					None => String::from("")
+				},
+			None => String::from("")
+		}
+	}
+
+	/**
+	# Returns
+	The MIME type associated with the extension of the file indicated by
+	this resource.
+
+	# Examples
+	```
+	use c20web::ResourcePath;
+
+	let res = ResourcePath{resource: String::from("/hello.jpg")};
+	let mime = res.get_mime();
+	assert_eq!(mime, String::from("image/jpeg"));
+	```
+	*/
+	pub fn get_mime(&self) -> &str
+	{
+		let extension = self.get_extension();
+		if let Some(found_mime) = MIME_BY_EXTENSION.get(&extension)
+		{
+			found_mime
+		}else{
+			warn!("Could not find MIME type for file extension: {}", extension);
+			"text/plain"
+		}
+	}
+}
+
+/**
+Handle an incoming TCP connection. This is the function that gets loaded into
+a thread with each new connection. Handles everything including output,
+logging, and cleanup.
+
+# Parameters
+- `stream`: The TCP Stream of the connection we are to handle
+
+# Examples
+```no_run
+use std::net::TcpListener;
+use threadpool::ThreadPool;
+use c20web::handle_connection;
+
+let listener = TcpListener::bind("127.0.0.1:8000").unwrap();
+let pool = ThreadPool::new(100);
+for stream in listener.incoming()
+{
+	let stream = stream.unwrap();
+	pool.execute(move ||{handle_connection(stream);});
+}
+```
+*/
 pub fn handle_connection(mut stream: TcpStream)
 {
 	trace!("Starting to process request.");
@@ -172,41 +397,14 @@ pub fn handle_connection(mut stream: TcpStream)
 							Response::new(505, String::from("This server only speaks HTTP/1.1"))
 						}else{
 							//attempt to load the requested file
-							let resource = request.resource.replacen(&"/",&"",1);
-							let resource = format!("{}/{}", webroot, resource);
-							trace!("Requesting page: {}",&resource);
-							let extension = match Path::new(&resource).extension(){
-								Some(x) => match x.to_str(){
-										Some(xs) => String::from(xs),
-										None => String::from("")
-									},
-								None => String::from("")
-							};
-							let mime = if let Some(found_mime) = MIME_BY_EXTENSION.get(&extension)
+							let res = ResourcePath{resource: request.resource};
+							let path = res.get_path(webroot);
+							trace!("Requesting page: {}",&path);
+							let mime = res.get_mime();
+							match std::fs::read(&path)
 							{
-								found_mime
-							}else{
-								warn!("Could not find MIME type for file extension: {}", extension);
-								"text/plain"
-							};
-							let body_result = fs::read_to_string(&resource);
-							match body_result
-							{
-								Err(read_err) => {
-									if read_err.kind() == ErrorKind::InvalidData
-									{
-										match std::fs::read(&resource)
-										{
-											Ok(bytes) => Response{code: 200, mime: String::from(mime), body: Data::Binary(bytes)},
-											Err(e) => Response::new(404, format!("{}",e))
-										}
-									}else{
-										Response::new(404, format!("{}",read_err))
-									}
-								},
-								Ok(body) => {
-									Response{code: 200, mime: String::from(mime), body: Data::Text(body)}
-								}
+								Ok(bytes) => Response{code: 200, mime: String::from(mime), body: bytes},
+								Err(e) => Response::new(404, format!("{}",e))
 							}
 						}
 					},
@@ -227,18 +425,45 @@ pub fn handle_connection(mut stream: TcpStream)
 	let request_line = format!("From: {} Response code: {}", peer_ip, response.code);
 	log!(target: "requests", Level::Info, "{}", request_line);
 
-	//send otuput
-	let write_res = stream.write(&(response.to_vec()));
-	match write_res
+	//send output
+	response.send(stream);
+}
+
+/*
+Test those functions which weren't able to have good tests as part of their
+example usage in the docs, but are still possible to unit-test
+*/
+#[cfg(test)]
+mod tests
+{
+	use super::*;
+
+	// Request::parse
+	#[test]
+	fn parse_request()
 	{
-		Ok(_) => {},
-		Err(em) => {error!("Write error: {}",em);}
+		let req_string = Box::new(b"GET /hello.htm HTTP/1.1\r\nUser-Agent: Mozilla/4.0 (compatible; MSIE5.01; Windows NT)\r\nHost: 127.0.0.1:8000\r\n\r\n".to_owned());
+		let request = Request::parse(req_string);
+		match request
+		{
+			Ok(req) =>{
+				assert_eq!(req.method, "GET");
+				assert_eq!(req.resource, "/hello.htm");
+				assert_eq!(req.http_version, "HTTP/1.1");
+			}
+			Err(_) => assert!(false)
+		}
 	}
-	
-	let flush_res = stream.flush();
-	match flush_res
+
+	// Response.to_vec
+	#[test]
+	fn response_to_vec()
 	{
-		Ok(_) => {},
-		Err(em) => {error!("Flush error: {}",em);}
+		let body = String::from("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>Hello</title></head><body><h1>Hello</h1><p>Greetings from Rust</p></body></html>").as_bytes().to_vec();
+		let res = Response{code: 200, mime: String::from("text/html"), body};
+		let out_vec = res.to_vec();
+
+		let out_expected = b"HTTP/1.1 200 OK\r\nContent-Type: text/html;\r\nContent-Length: 146;\r\n\r\n<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>Hello</title></head><body><h1>Hello</h1><p>Greetings from Rust</p></body></html>".to_vec();
+		assert_eq!(out_vec, out_expected);
 	}
 }
