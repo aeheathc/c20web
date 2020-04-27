@@ -1,14 +1,128 @@
 #[macro_use]
 extern crate lazy_static;
 
-use std::collections::HashMap;
+use std::io::{ErrorKind};
 use std::fs;
 use std::io::prelude::*;
 use std::net::Shutdown;
 use std::net::TcpStream;
-use std::sync::RwLock;
-use config::Config;
-use log::{error, warn, info, debug, trace, log, Level};
+use std::path::Path;
+
+use log::{error, warn, /*info, debug,*/ trace, log, Level};
+
+pub mod statics;
+use statics::SETTINGS;
+use statics::HTTP_RESPONSE_TABLE;
+use statics::MIME_BY_EXTENSION;
+
+
+pub struct Request
+{
+	method: String,
+	resource: String,
+	http_version: String,
+}
+
+impl Request
+{
+	pub fn parse(buffer: Box<[u8]>) -> Result<Request,Response>
+	{
+		//find the necessary parts in the request
+		let mut index_end_method = 0;
+		let mut index_end_resource = 0;
+		let mut index_end_line = 0;
+		for (index, request_byte) in buffer.iter().enumerate()
+		{
+			if *request_byte == b'\r' || *request_byte == b'\n'
+			{
+				index_end_line = index;
+				break;
+			}else if *request_byte == b' '{
+				if index_end_method == 0 {index_end_method = index;}
+				else if index_end_resource == 0 {index_end_resource = index;}
+			}
+		}
+
+		if index_end_line == 0 || index_end_resource == 0 || index_end_method == 0
+		{
+			Err(Response::new(400, String::from("Malformed request line")))
+		}else{
+			let method: &str = match std::str::from_utf8(&(buffer[0..index_end_method]))
+			{
+				Ok(s) => s,
+				Err(e) => {return Err(Response::new(400, format!("Malformed method name: {}",e)));}
+			};
+			let resource: &str = match std::str::from_utf8(&(buffer[(index_end_method+1)..index_end_resource]))
+			{
+				Ok(s) => s,
+				Err(e) => {return Err(Response::new(400, format!("Malformed resource name: {}",e)));}
+			};
+			let http_version: &str = match std::str::from_utf8(&(buffer[(index_end_resource+1)..index_end_line]))
+			{
+				Ok(s) => s,
+				Err(e) => {return Err(Response::new(400, format!("Malformed http version: {}",e)));}
+			};
+
+			Ok(Request{method: String::from(method), resource: String::from(resource), http_version: String::from(http_version)})
+		}
+	}
+}
+
+pub enum Data
+{
+	Binary(Vec::<u8>),
+	Text(String)
+}
+
+pub struct Response
+{
+	code: u16,
+	mime: String,
+	body: Data
+}
+
+impl Response
+{
+	pub fn new(code: u16, body: String) -> Response
+	{
+		Response{code: code, mime:String::from("text/html"), body: Data::Text(body)}
+	}
+
+	pub fn to_vec(&self) -> Vec::<u8>
+	{
+		let status = if let Some(status_str) = HTTP_RESPONSE_TABLE.get(&self.code)
+		{
+			format!("{} {}",self.code,status_str)
+		}else{
+			warn!("Returning HTTP response code with no name: {}", self.code);
+			format!("{} Unknown",self.code)
+		};
+	
+		let mut body_out: Vec::<u8> = if self.code < 200 || self.code >= 300
+		{
+			let mut error_page = match fs::read_to_string("error.html")
+			{
+				Err(e) => {
+					warn!("Using default error page because we wouldn't find error.html - {}",e);
+					String::from("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>{}</title></head><body><h1>{}</h1><p>{}</p></body></html>")
+				},
+				Ok(body) => body
+			};
+			error_page = error_page.replacen("{}", &status, 2);
+			let error_descr = if let Data::Text(t) = &self.body{t.clone()}else{String::from("")};
+			error_page.replacen("{}", &error_descr, 1).as_bytes().to_vec()
+		}else{
+			match &self.body{
+				Data::Binary(b) => b.to_owned(),
+				Data::Text(t) => t.as_bytes().to_vec()
+			}
+		};
+
+		let mut out = (format!("HTTP/1.1 {}\r\nContent-Type: {};\r\nContent-Length: {};\r\n\r\n", status, self.mime, body_out.len())).as_bytes().to_vec();
+		out.append(&mut body_out);
+		out
+	}
+}
 
 pub fn handle_connection(mut stream: TcpStream)
 {
@@ -27,73 +141,9 @@ pub fn handle_connection(mut stream: TcpStream)
 	};
 
 	trace!("Creating buffer");
-	let mut buffer = vec![0u8; request_max_bytes].into_boxed_slice();
+	let mut buffer = vec![0u8; request_max_bytes+1].into_boxed_slice();
 	trace!("Buffer created. Reading input");
 	let request_result = stream.read(&mut buffer);
-	trace!("Request read. Starting analysis");
-	let (response_code, mut response_body): (u16, String) = match request_result
-	{
-		Ok(num_bytes) => {
-			if num_bytes >= request_max_bytes
-			{
-				(413,String::from(""))
-			}else{
-				let mut index_end_method = 0;
-				let mut index_end_resource = 0;
-				let mut index_end_line = 0;
-				for (index, request_byte) in buffer.iter().enumerate()
-				{
-					if *request_byte == b'\r' || *request_byte == b'\n'
-					{
-						index_end_line = index;
-						break;
-					}else if *request_byte == b' '{
-						if index_end_method == 0 {index_end_method = index;}
-						else if index_end_resource == 0 {index_end_resource = index;}
-					}
-				}
-
-				if index_end_line == 0 || index_end_resource == 0 || index_end_method == 0
-				{
-					(400, String::from("Malformed request line"))
-				}else{
-					let method: &[u8] = &(buffer[0..index_end_method]);
-					let resource: &[u8] = &(buffer[(index_end_method+1)..index_end_resource]);
-					let http_version: &[u8] = &(buffer[(index_end_resource+1)..index_end_line]);
-
-					let resource_parse_res = std::str::from_utf8(resource);
-
-					if method != b"GET"
-					{
-						(501,String::from(""))
-					}else if http_version != b"HTTP/1.1"{
-						(505,String::from(""))
-					}else if let Err(res_err) = resource_parse_res{
-						(400,format!("Malformed resource name: {}",res_err))
-					}else{
-						match resource_parse_res
-						{
-							Err(res_err) => (400,format!("Malformed resource name: {}", res_err)),
-							Ok(resource) =>
-							{
-								let resource = resource.replacen(&"/",&"",1);
-								let resource = format!("{}/{}", webroot, resource);
-								trace!("Requesting page: {}",&resource);
-								let body_result = fs::read_to_string(&resource);
-								match body_result
-								{
-									Err(read_err) => (404,format!("{}",read_err)),
-									Ok(body) => (200,body)
-								}
-							}
-						}
-					}
-				}
-			}
-		},
-		Err(err_str) => {(400,format!("The network stream didn't stay valid long enough for the server to read it: {}",err_str))}
-	};
-	trace!("Request analyzed. Closing input and starting output.");
 
 	/* Any output won't make it to the browser if there is still input left to be read.
 	 * In order to avoid DoS attacks by enforcing max request size, and still
@@ -103,43 +153,82 @@ pub fn handle_connection(mut stream: TcpStream)
 	*/
 	let _shutdown_res = stream.shutdown(Shutdown::Read);
 
-	let status = if let Some(status_str) = HTTP_RESPONSE_TABLE.get(&response_code)
+	trace!("Request read. Starting analysis");
+	let response: Response = match request_result
 	{
-		format!("{} {}",response_code,status_str)
-	}else{
-		warn!("Returning HTTP response code with no name: {}", response_code);
-		format!("{} Unknown",response_code)
+		Ok(num_bytes) => {
+			if num_bytes >= request_max_bytes
+			{
+				Response::new(413, String::from(""))
+			}else{
+				match Request::parse(buffer)
+				{
+					Ok(request) => {
+						//determine whether we currently support the features necessary to fulfill the request
+						if request.method != "GET"
+						{
+							Response::new(501, String::from("This server only accepts GET requests."))
+						}else if request.http_version != "HTTP/1.1"{
+							Response::new(505, String::from("This server only speaks HTTP/1.1"))
+						}else{
+							//attempt to load the requested file
+							let resource = request.resource.replacen(&"/",&"",1);
+							let resource = format!("{}/{}", webroot, resource);
+							trace!("Requesting page: {}",&resource);
+							let extension = match Path::new(&resource).extension(){
+								Some(x) => match x.to_str(){
+										Some(xs) => String::from(xs),
+										None => String::from("")
+									},
+								None => String::from("")
+							};
+							let mime = if let Some(found_mime) = MIME_BY_EXTENSION.get(&extension)
+							{
+								found_mime
+							}else{
+								warn!("Could not find MIME type for file extension: {}", extension);
+								"text/plain"
+							};
+							let body_result = fs::read_to_string(&resource);
+							match body_result
+							{
+								Err(read_err) => {
+									if read_err.kind() == ErrorKind::InvalidData
+									{
+										match std::fs::read(&resource)
+										{
+											Ok(bytes) => Response{code: 200, mime: String::from(mime), body: Data::Binary(bytes)},
+											Err(e) => Response::new(404, format!("{}",e))
+										}
+									}else{
+										Response::new(404, format!("{}",read_err))
+									}
+								},
+								Ok(body) => {
+									Response{code: 200, mime: String::from(mime), body: Data::Text(body)}
+								}
+							}
+						}
+					},
+					Err(res) => res
+				}
+			}
+		},
+		Err(err_str) => Response::new(400, format!("The network stream didn't stay valid long enough for the server to read it: {}",err_str))
 	};
+	trace!("Request analyzed. Starting output.");
 
-	if response_code < 200 || response_code >= 300
-	{
-		let errpage_result = fs::read_to_string("error.html");
-		let mut error_page = match errpage_result
-		{
-			Err(e) => {
-				warn!("Using default error page because we wouldn't find error.html - {}",e);
-				String::from("<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'><title>{}</title></head><body><h1>{}</h1><p>{}</p></body></html>")
-			},
-			Ok(body) => body
-		};
-		error_page = error_page.replacen("{}", &status, 2);
-		response_body = error_page.replacen("{}", &response_body, 1);
-	}
-
-	//build request log line
+	//write to request log
 	let peer_ip = match stream.peer_addr()
 	{
 		Ok(r) => r.to_string(),
 		Err(e)=> {warn!("Couldn't get peer IP: {}",e); String::from("Unknown")}
 	};
-	let request_line = format!("From: {} Response code: {}", peer_ip, response_code);
+	let request_line = format!("From: {} Response code: {}", peer_ip, response.code);
 	log!(target: "requests", Level::Info, "{}", request_line);
 
-	//build response
-	let headers = format!("Content-Type: text/html;\r\nContent-Length: {};", response_body.len());
-	let response = format!("HTTP/1.1 {}\r\n{}\r\n\r\n{}", status, headers, response_body);
-	
-	let write_res = stream.write(response.as_bytes());
+	//send otuput
+	let write_res = stream.write(&(response.to_vec()));
 	match write_res
 	{
 		Ok(_) => {},
@@ -152,79 +241,4 @@ pub fn handle_connection(mut stream: TcpStream)
 		Ok(_) => {},
 		Err(em) => {error!("Flush error: {}",em);}
 	}
-}
-
-lazy_static!
-{
-	pub static ref DEFAULT_CONFIG: String = String::from("listen_addr = \"127.0.0.1:7878\"\nworking_dir = \"data\"\nwebroot = \"webroot\"\nthreads_max = 100\nrequest_max_bytes = 1000");
-
-	pub static ref SETTINGS: RwLock<Config> = RwLock::new(Config::default());
-
-    pub static ref HTTP_RESPONSE_TABLE: HashMap<u16,String> = {
-        let mut codes = HashMap::<u16,String>::new();
-        codes.insert(100, String::from("Continue"));
-        codes.insert(101, String::from("Switching Protocols"));
-        codes.insert(102, String::from("Processing"));
-        codes.insert(200, String::from("OK"));
-        codes.insert(201, String::from("Created"));
-        codes.insert(202, String::from("Accepted"));
-        codes.insert(203, String::from("Non-authoritative Information"));
-        codes.insert(204, String::from("No Content"));
-        codes.insert(205, String::from("Reset Content"));
-        codes.insert(206, String::from("Partial Content"));
-        codes.insert(207, String::from("Multi-Status"));
-        codes.insert(208, String::from("Already Reported"));
-        codes.insert(226, String::from("IM Used"));
-        codes.insert(300, String::from("Multiple Choices"));
-        codes.insert(301, String::from("Moved Permanently"));
-        codes.insert(302, String::from("Found"));
-        codes.insert(303, String::from("See Other"));
-        codes.insert(304, String::from("Not Modified"));
-        codes.insert(305, String::from("Use Proxy"));
-        codes.insert(307, String::from("Temporary Redirect"));
-        codes.insert(308, String::from("Permanent Redirect"));
-        codes.insert(400, String::from("Bad Request"));
-        codes.insert(401, String::from("Unauthorized"));
-        codes.insert(402, String::from("Payment Required"));
-        codes.insert(403, String::from("Forbidden"));
-        codes.insert(404, String::from("Not Found"));
-        codes.insert(405, String::from("Method Not Allowed"));
-        codes.insert(406, String::from("Not Acceptable"));
-        codes.insert(407, String::from("Proxy Authentication Required"));
-        codes.insert(408, String::from("Request Timeout"));
-        codes.insert(409, String::from("Conflict"));
-        codes.insert(410, String::from("Gone"));
-        codes.insert(411, String::from("Length Required"));
-        codes.insert(412, String::from("Precondition Failed"));
-        codes.insert(413, String::from("Payload Too Large"));
-        codes.insert(414, String::from("Request-URI Too Long"));
-        codes.insert(415, String::from("Unsupported Media Type"));
-        codes.insert(416, String::from("Requested Range Not Satisfiable"));
-        codes.insert(417, String::from("Expectation Failed"));
-        codes.insert(418, String::from("I'm a teapot"));
-        codes.insert(421, String::from("Misdirected Request"));
-        codes.insert(422, String::from("Unprocessable Entity"));
-        codes.insert(423, String::from("Locked"));
-        codes.insert(424, String::from("Failed Dependency"));
-        codes.insert(426, String::from("Upgrade Required"));
-        codes.insert(428, String::from("Precondition Required"));
-        codes.insert(429, String::from("Too Many Requests"));
-        codes.insert(431, String::from("Request Header Fields Too Large"));
-        codes.insert(444, String::from("Connection Closed Without Response"));
-        codes.insert(451, String::from("Unavailable For Legal Reasons"));
-        codes.insert(499, String::from("Client Closed Request"));
-        codes.insert(500, String::from("Internal Server Error"));
-        codes.insert(501, String::from("Not Implemented"));
-        codes.insert(502, String::from("Bad Gateway"));
-        codes.insert(503, String::from("Service Unavailable"));
-        codes.insert(504, String::from("Gateway Timeout"));
-        codes.insert(505, String::from("HTTP Version Not Supported"));
-        codes.insert(506, String::from("Variant Also Negotiates"));
-        codes.insert(507, String::from("Insufficient Storage"));
-        codes.insert(508, String::from("Loop Detected"));
-        codes.insert(510, String::from("Not Extended"));
-        codes.insert(511, String::from("Network Authentication Required"));
-        codes.insert(599, String::from("Network Connect Timeout Error"));
-        codes
-    };
 }

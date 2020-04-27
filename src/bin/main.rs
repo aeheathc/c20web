@@ -10,8 +10,8 @@ use log4rs;
 use threadpool::ThreadPool;
 
 use c20web::handle_connection;
-use c20web::SETTINGS;
-use c20web::DEFAULT_CONFIG;
+use c20web::statics::SETTINGS;
+use c20web::statics::DEFAULT_CONFIG;
 
 fn main()
 {
@@ -45,7 +45,12 @@ fn main()
 	//at this point the loggers are available and any further errors can be logged instead of bring thrown into a panic
 	
 	info!("Starting up.");
+	start_listening(listen_addr, threads_max);
+	info!("Shutting down.");
+}
 
+fn start_listening(listen_addr: String, threads_max: usize)
+{
 	let listener = match TcpListener::bind(&listen_addr)
 	{
 		Ok(r) => r,
@@ -61,6 +66,4 @@ fn main()
 		let stream = stream.unwrap();
         pool.execute(move ||{handle_connection(stream);});
     }
-	info!("Shutting down.");
 }
-
